@@ -1,0 +1,552 @@
+Đặc tả hệ thống Telegram Expense Bot + Google Sheets
+
+Tôi muốn xây dựng một Telegram Bot quản lý thu chi cá nhân, backend chạy hoàn toàn bằng Google Apps Script, dữ liệu lưu trên Google Sheets. Bot không sử dụng LLM hay AI để suy luận. Việc xử lý nội dung tin nhắn chỉ dựa trên regex, keyword và các rule cố định để đảm bảo đơn giản, ổn định và dễ bảo trì.
+
+Kiến trúc tổng thể
+
+Hệ thống gồm Telegram Bot → Telegram Webhook → Google Apps Script Web App → các module xử lý dữ liệu → Google Sheets.
+
+Google Apps Script đóng vai trò backend/serverless. Không cần VPS hoặc server riêng.
+
+Code nên được chia thành một số file theo nhóm chức năng, không chia quá nhỏ. Tôi muốn khoảng 4–5 nhóm chính:
+
+Config: chứa BOT_TOKEN, SHEET_ID, WEB_APP_URL, TIMEZONE và các cấu hình hệ thống.
+
+Bot: chịu trách nhiệm nhận Telegram update, kiểm tra message, chống xử lý trùng, nhận diện command, gửi message phản hồi Telegram, set/get/delete webhook.
+
+Data: chịu trách nhiệm parse nội dung giao dịch và phân loại category. Đây là một nhóm chức năng xử lý dữ liệu đầu vào. Không sử dụng AI.
+
+Sheets: chịu trách nhiệm tạo sheet, tìm đúng tháng, thêm giao dịch, cập nhật giao dịch cũ, sort dữ liệu và format Google Sheets.
+
+Report: chịu trách nhiệm các chức năng thống kê/báo cáo. Hiện tại có thể chỉ triển khai các báo cáo cơ bản, nhưng kiến trúc phải dễ mở rộng sau này thành report theo ngày, tháng, năm, category, biểu đồ, v.v.
+
+Không cần triển khai user management, admin management hay các chức năng phức tạp ở phiên bản đầu tiên.
+
+Format tin nhắn Telegram
+
+Hiện tại bot chỉ cần hỗ trợ format:
+
+ăn 65k
+xăng 50k
+grab 35k
+mua áo 500k
+
+Số tiền hiện tại sử dụng đơn vị k.
+
+Ví dụ:
+
+65k = 65.000 VND
+500k = 500.000 VND
+
+Sau này có thể mở rộng parser để hỗ trợ:
+
+1tr
+1.5tr
+1m
+
+nhưng chưa cần triển khai nếu không cần thiết.
+
+Ghi nhận ngày giao dịch
+
+Bot phải hỗ trợ ghi giao dịch cho ngày hiện tại hoặc ngày quá khứ.
+
+Nếu người dùng gửi:
+
+ăn 50k
+
+thì bot hiểu ngày giao dịch là ngày hiện tại.
+
+Nếu người dùng quên ghi giao dịch và vài ngày sau mới nhớ ra, có thể gửi:
+
+13/7 ăn 50k
+
+hoặc:
+
+13t7 ăn 50k
+
+Bot phải hiểu đây là giao dịch ngày 13/07 của năm hiện tại.
+
+Ví dụ hiện tại là tháng 8/2026:
+
+13/7 ăn 50k
+
+→ Date = 13/07/2026.
+
+Không cần hỗ trợ ngày quá xa ở phiên bản đầu tiên. Chủ yếu phục vụ trường hợp người dùng quên ghi trong khoảng vài ngày đến khoảng một tuần.
+
+Nếu không có ngày thì sử dụng ngày hiện tại.
+
+Parser cần tách:
+
+date
+note
+amount
+
+sau đó category được xác định từ note.
+
+Type
+
+Phiên bản đầu tiên chủ yếu dùng cho chi tiêu, vì vậy nếu người dùng nhập:
+
+ăn 50k
+
+thì:
+
+Type = Chi
+
+Tuy nhiên database vẫn phải có cột Type để sau này có thể mở rộng thành:
+
+Thu
+Chi
+
+Ví dụ sau này có thể hỗ trợ:
+
+5000k thu lương
+
+nhưng chưa cần ưu tiên ở phiên bản đầu.
+
+Category
+
+Category được xác định bằng keyword/rule cố định.
+
+Các category ban đầu:
+
+Ăn uống
+Xăng xe
+Di chuyển
+Nhà ở
+Điện tử
+Mua sắm
+Giải trí
+Sức khỏe
+Học tập
+Du lịch
+Quà tặng
+Dịch vụ
+Khác
+
+Ví dụ:
+
+ăn 60k
+
+→ Ăn uống
+
+xăng 50k
+
+→ Xăng xe
+
+grab 35k
+
+→ Di chuyển
+
+mua màn hình 5tr
+
+→ Điện tử
+
+mua áo 500k
+
+→ Mua sắm
+
+Cần chú ý thứ tự ưu tiên keyword để tránh phân loại sai.
+
+Ví dụ xăng phải vào Xăng xe, không được rơi vào Ăn uống.
+
+Không sử dụng AI để phân loại.
+
+Database Google Sheets
+
+Database chính phải có dữ liệu liên tục theo hàng, không được chèn các hàng merge vào giữa database.
+
+Cấu trúc database nên có một header duy nhất ở hàng đầu:
+
+ID | Date | Type | Category | Amount | Note | Raw Text
+
+Ví dụ:
+
+001 | 13/07/2026 | Chi | Ăn uống | 50000 | ăn | ăn 50k
+002 | 13/07/2026 | Chi | Xăng xe | 50000 | xăng | xăng 50k
+003 | 14/07/2026 | Chi | Di chuyển | 35000 | grab | grab 35k
+
+Header phải được freeze để khi scroll xuống vẫn nhìn thấy.
+
+Hiển thị tháng
+
+Tôi muốn Google Sheets có giao diện đẹp và trực quan, có thể nhìn vào là phân biệt được dữ liệu của từng tháng.
+
+Không muốn chèn một hàng "THÁNG 7" hoặc "THÁNG 8" vào giữa database vì điều đó làm database không còn liên tục và gây khó khăn cho việc sort/filter/query.
+
+Thay vào đó:
+
+Cột A dành riêng cho việc hiển thị tháng.
+
+Database thực tế bắt đầu từ cột B.
+
+Ví dụ:
+
+A              B          C       D          E          F       G
+Tháng 7/2026   Date       Type    Category   Amount     Note    Raw Text
+               01/07      Chi     Ăn uống    50000      ăn      ăn 50k
+               02/07      Chi     Xăng xe    50000      xăng    xăng 50k
+               02/07      Chi     Di chuyển  35000      grab    grab 35k
+
+Tháng 8/2026   01/08      Chi     Ăn uống    60000      ăn      ăn 60k
+               02/08      Chi     Mua sắm   500000     áo      mua áo 500k
+
+Cột A có thể merge theo chiều dọc cho toàn bộ các transaction thuộc cùng một tháng.
+
+Ví dụ:
+
+┌──────────────┬──────────┬────────┬───────────┐
+│              │ Date     │ Type   │ Category  │
+│              │          │        │           │
+│ Tháng 7/2026 │ 01/07    │ Chi    │ Ăn uống   │
+│              │ 02/07    │ Chi    │ Xăng xe   │
+│              │ 02/07    │ Chi    │ Di chuyển │
+│              │ 05/07    │ Chi    │ Ăn uống   │
+└──────────────┴──────────┴────────┴───────────┘
+┌──────────────┬──────────┬────────┬───────────┐
+│              │ 01/08    │ Chi    │ Ăn uống   │
+│ Tháng 8/2026 │ 02/08    │ Chi    │ Mua sắm   │
+└──────────────┴──────────┴────────┴───────────┘
+
+Điểm quan trọng: merge chỉ áp dụng ở cột A, còn các cột database B trở đi luôn là dữ liệu bình thường, mỗi transaction một row.
+
+Xử lý khi thêm transaction vào tháng cũ
+
+Đây là một yêu cầu rất quan trọng.
+
+Ví dụ hiện tại là tháng 8 nhưng người dùng gửi:
+
+13/7 ăn 50k
+
+Bot phải:
+
+xác định transaction thuộc tháng 7;
+tìm toàn bộ các transaction tháng 7 trong database;
+chèn transaction mới vào đúng vị trí theo ngày;
+không append transaction đó xuống cuối tháng 8;
+sau khi insert phải cập nhật lại merge của cột A.
+
+Ví dụ trước:
+
+Tháng 7
+01/07
+03/07
+05/07
+
+Tháng 8
+01/08
+02/08
+
+Sau khi thêm:
+
+13/7 ăn 50k
+
+thì phải thành:
+
+Tháng 7
+01/07
+03/07
+05/07
+13/07
+
+Tháng 8
+01/08
+02/08
+
+Nếu thêm:
+
+02/7 ăn 40k
+
+thì phải chèn vào:
+
+Tháng 7
+01/07
+02/07
+03/07
+05/07
+13/07
+
+Database phải luôn được sort theo Date tăng dần.
+
+Có thể đơn giản hóa bằng cách sau mỗi lần thêm transaction:
+
+append transaction
+→ sort toàn bộ database theo Date
+→ rebuild month groups
+→ rebuild merge column A
+
+Với quy mô khoảng vài nghìn dòng/năm thì cách này hoàn toàn đủ nhanh và đơn giản hơn nhiều so với việc cố gắng tối ưu insert từng vị trí.
+
+Rebuild Month Header
+
+Không được tạo month header như một row database.
+
+Thay vào đó, sau khi dữ liệu thay đổi, một function kiểu:
+
+rebuildMonthDisplay()
+
+sẽ:
+
+đọc Date từ cột B;
+xác định các transaction thuộc từng tháng;
+unmerge cột A hiện tại;
+xóa nội dung cột A;
+xác định range của từng tháng;
+merge các cell tương ứng trong cột A;
+ghi "Tháng 07/2026", "Tháng 08/2026"... vào vùng merge;
+căn giữa theo chiều dọc/ngang;
+format đẹp.
+
+Nếu tháng chỉ có một transaction thì không cần merge nhiều dòng; chỉ cần ghi tên tháng vào A của row đó.
+
+Khi thêm transaction
+
+Luồng xử lý chính:
+
+Telegram message
+        ↓
+doPost()
+        ↓
+kiểm tra message
+        ↓
+chống duplicate update
+        ↓
+parseTransaction()
+        ↓
+detectCategory()
+        ↓
+validate data
+        ↓
+saveTransaction()
+        ↓
+sort database theo Date
+        ↓
+rebuildMonthDisplay()
+        ↓
+send confirmation về Telegram
+Chống bot spam / xử lý duplicate
+
+Đây là phần bắt buộc vì Telegram webhook có thể gửi lại update hoặc hệ thống có thể xử lý một update nhiều lần.
+
+Mỗi Telegram update có:
+
+update_id
+
+Bot phải lưu update_id đã xử lý.
+
+Khi nhận update mới:
+
+if update_id đã tồn tại
+    → bỏ qua
+else
+    → xử lý
+    → lưu update_id
+
+Có thể dùng PropertiesService để lưu last_update_id hoặc cơ chế lưu một tập các ID gần nhất.
+
+Tuy nhiên cần thiết kế cẩn thận để không gửi lại message và không ghi transaction hai lần nếu Telegram retry webhook.
+
+Ngoài ra doPost() phải trả HTTP response hợp lệ:
+
+OK
+
+sau khi nhận request.
+
+Không được để exception làm webhook trả response lỗi không cần thiết.
+
+Telegram Commands
+
+Bot hỗ trợ các command cơ bản:
+
+/start
+/help
+/homnay
+/thongke
+/undo
+
+Các command này do mình tự định nghĩa trong code.
+
+Ngoài ra cần cấu hình BotFather command menu để khi người dùng gõ /, Telegram hiển thị danh sách command.
+
+Ví dụ:
+
+/start    Khởi động bot
+/help     Hướng dẫn
+/homnay   Chi tiêu hôm nay
+/thongke  Thống kê
+/undo     Xóa giao dịch gần nhất
+
+Khi người dùng gõ:
+
+/s
+
+Telegram có thể gợi ý:
+
+/start
+/thongke
+
+Việc này chủ yếu được cấu hình thông qua danh sách commands của Telegram Bot, không phải tự code autocomplete trong Google Apps Script.
+
+/start
+
+Khi gửi:
+
+/start
+
+bot trả về hướng dẫn ngắn:
+
+👋 Chào bạn!
+
+Bot quản lý chi tiêu đã sẵn sàng.
+
+Ví dụ:
+
+🍜 ăn 65k
+⛽ xăng 50k
+🚕 grab 35k
+
+Nếu quên ngày:
+13/7 ăn 50k
+13t7 ăn 50k
+
+Gõ /help để xem hướng dẫn.
+Confirmation message
+
+Sau khi ghi thành công:
+
+✅ Đã ghi giao dịch
+
+📅 13/07/2026
+📌 ăn
+🏷 Ăn uống
+💰 50.000đ
+📊 Chi
+
+Nếu ghi giao dịch của ngày hiện tại thì vẫn có thể hiển thị ngày để người dùng kiểm tra.
+
+Google Sheets formatting
+
+Google Sheet nên được thiết kế theo hướng professional financial dashboard/database, nhưng không làm ảnh hưởng đến database.
+
+Các yêu cầu:
+
+Header duy nhất ở trên cùng.
+Freeze header.
+Auto resize hoặc đặt width hợp lý.
+Date format thống nhất.
+Amount format theo VND.
+Category dễ nhìn.
+Type có thể format khác nhau giữa Thu/Chi.
+Cột A dùng để hiển thị tháng.
+Cột A merge dọc theo từng nhóm tháng.
+Month label căn giữa.
+Có border nhẹ để phân biệt nhóm tháng.
+Database B:G luôn liên tục.
+Không có các row "Tháng 7" nằm giữa database.
+Không merge các cột B:G.
+Sort Date tăng dần.
+
+Có thể dùng conditional formatting để:
+
+Chi → một kiểu hiển thị
+Thu → một kiểu hiển thị
+
+nhưng không cần màu sắc quá rực rỡ.
+
+Report
+
+Phiên bản đầu tiên không cần report tháng/năm phức tạp.
+
+Có thể triển khai:
+
+/homnay
+
+→ tổng chi hôm nay + breakdown theo category.
+
+Ví dụ:
+
+📅 HÔM NAY
+
+💸 Tổng chi: 285.000đ
+
+🍜 Ăn uống: 120.000đ
+⛽ Xăng xe: 50.000đ
+🚕 Di chuyển: 35.000đ
+🛒 Mua sắm: 80.000đ
+
+Sau này có thể mở rộng:
+
+/thongke
+/thongke thang
+/thongke nam
+
+và có thể tạo biểu đồ Google Sheets hoặc gửi chart về Telegram.
+
+Không cần triển khai những tính năng này ngay nếu làm phức tạp code.
+
+Undo
+/undo
+
+sẽ xóa transaction gần nhất.
+
+Sau khi xóa:
+
+→ sort lại database
+→ rebuild month display
+→ cập nhật merge column A
+
+để giao diện không bị lỗi.
+
+Nguyên tắc kiến trúc quan trọng
+
+Database và presentation phải được tách biệt.
+
+Database thực tế:
+
+B:G
+
+luôn là dữ liệu dạng bảng bình thường.
+
+Presentation:
+
+A
+
+chỉ phục vụ việc hiển thị tháng.
+
+Do đó việc merge cột A không ảnh hưởng đến việc:
+
+sort;
+filter;
+insert;
+query;
+report;
+thêm transaction tháng cũ;
+thống kê dữ liệu.
+
+Nếu sau này muốn thay đổi giao diện, chỉ cần thay đổi rebuildMonthDisplay() mà không phải thay đổi logic lưu transaction.
+
+Đây là kiến trúc ưu tiên data integrity trước, presentation sau.
+
+Khả năng mở rộng sau này
+
+Kiến trúc hiện tại phải cho phép dễ dàng bổ sung:
+
+Thu / Chi
+1tr / 1.5tr
+/thongke
+/report tháng
+/report năm
+biểu đồ
+budget
+ngân sách theo category
+Google Sheets dashboard
+nhiều user
+phân quyền
+export dữ liệu
+
+nhưng không triển khai những thứ này ngay từ đầu.
+
+Mục tiêu phiên bản đầu tiên là:
+
+Telegram → nhập giao dịch cực nhanh → parser chính xác → category chính xác → lưu Google Sheets đúng ngày → sort đúng thứ tự → giao diện tháng đẹp → không duplicate/spam.
